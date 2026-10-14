@@ -43,11 +43,18 @@ import base64
 import contextlib
 import io
 import json
+import sys
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import numpy as np
 import torch
+
+# RoboGesture also ships a "stream" mode (robogesture/cloud.py, used by its own
+# app) that sends microphone audio and text to ByteDance's Volcengine service.
+# This server never uses it. Blocking the module here means it cannot be loaded
+# into this process at all, even by a later change that imports it by mistake.
+sys.modules["robogesture.cloud"] = None
 
 from robogesture.collision import CollisionFilter
 from robogesture.config import (
@@ -141,8 +148,20 @@ def _mirror(angles):
 # filter. Angles as in POSES; elbows are kept out from the body.
 _ONE_HAND = (0.15, 0.34, 0.18, -0.02, 0.0, 0.03, 0.13)
 _POINT = (-0.55, 0.34, 0.90, 0.13, 0.0, 0.07, 0.11)
-_SMALL = (-0.31, 0.36, -0.30, -0.29, 0.0, 0.08, 0.04)
-_BIG = (0.07, 0.34, 0.65, 0.03, 0.0, 0.05, 0.13)
+# How far "small" and "big" go from the arm's resting pose towards their full
+# pose: 1 is the full gesture as first designed, 0.6 is six tenths of the way.
+# Smaller is calmer and shifts less weight; too small stops reading as a gesture.
+CUE_REST = (0.29, 0.30, 0.0, 0.98, 0.0, 0.0, 0.0)      # left arm hanging as the G1 holds it while standing
+CUE_SIZE = {"small": 0.7, "big": 0.6}
+
+
+def _sized(angles, size):
+    """The pose `size` of the way from the resting arm to `angles`."""
+    return tuple(round(rest + size * (angle - rest), 3) for rest, angle in zip(CUE_REST, angles))
+
+
+_SMALL = _sized((-0.31, 0.36, -0.30, -0.29, 0.0, 0.08, 0.04), CUE_SIZE["small"])
+_BIG = _sized((0.07, 0.34, 0.65, 0.03, 0.0, 0.05, 0.13), CUE_SIZE["big"])
 _ASK = (-0.05, 0.34, 0.17, -0.14, 0.0, 0.05, 0.08)
 CUES = {
     # "Yes!" / "Correct.": the right hand reaches forward and bobs gently twice.
