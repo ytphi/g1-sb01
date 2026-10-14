@@ -182,6 +182,32 @@ the 0.1.7 release on PyPI lacks options the speech framework uses. The first sta
   No monitoring behavior was physically validated by this work.
 - **Status:** offline tests only. This has not been run on the physical robot.
 
+### Optional — a local model instead of Claude
+
+`SB01_LLM=local` has the replies written by a model running on this computer through
+[Ollama](https://ollama.com), not by Claude: no internet, no API key, no cost. Unset (or `claude`) uses Claude as before.
+
+```bash
+# once, with internet
+curl -fsSL https://ollama.com/install.sh | sh
+ollama pull gemma3:12b
+
+SB01_LLM=local python3 scripts/sb01_conversation.py enp2s0
+```
+
+- **Model:** `gemma3:12b` (Google) by default; `SB01_LOCAL_MODEL=gemma3:4b` for the smaller one on a smaller card. On the development
+  laptop, 4B answered English questions about the course correctly in about 2 s, using 2.7 GB of graphics memory,
+  but got the day or time wrong in about half of 22 other languages. 12B was right in all 22 in one run and
+  in 19 of 22 in another, but needs about 8.4 GB of graphics memory beside the voice and gesture server.
+- **Graphics memory is shared** by the model, the voice and the gesture server. On the 6 GB laptop card all three
+  together ran short: replies were slow and one gesture was dropped. A larger card is needed for all three.
+- **At startup** the model is loaded and reads the instructions and course notes once (up to a minute), so
+  the first question is not kept waiting. If Ollama or the model is missing, the program stops and says what to do.
+- **What is spoken:** a language label in front of a reply, or a translation or note in brackets after it, is removed.
+- **Teaching gestures:** in testing, the local models did not use the gesture marks.
+- `scripts/preflight.py` checks that Ollama is running and has the model.
+- **Status:** tested on the development laptop with a stand-in robot only.
+
 ---
 
 ## How It Works

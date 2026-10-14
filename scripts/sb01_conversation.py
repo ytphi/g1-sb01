@@ -43,6 +43,7 @@ import queue
 import random
 import asyncio
 import threading
+import urllib.error
 import urllib.request
 import urllib.parse
 from collections import deque
@@ -145,6 +146,29 @@ GESTURE_CUES = os.environ.get("SB01_GESTURE_CUES", "").strip() == "1" and bool(G
 # (see teleop/voice_chatterbox.py): the graphics card is the gesture server's.
 VOICE_BACKEND = os.environ.get("SB01_VOICE", "").strip().lower() or "edge"
 VOICE_MAX_FAILURES = 3   # Chatterbox failures in a row before it is left off for the session
+# Which model works out the replies. Unset or "claude" = Claude over the internet
+# (needs ANTHROPIC_API_KEY), as before. SB01_LLM=local asks a model running on
+# this computer through Ollama instead: no internet, no API key, no cost.
+#   SB01_LOCAL_MODEL   the Ollama model (`ollama pull` it first)
+#   SB01_LOCAL_URL     where Ollama listens, if not the usual place
+LLM = os.environ.get("SB01_LLM", "").strip().lower() or "claude"
+LOCAL_MODEL = os.environ.get("SB01_LOCAL_MODEL", "").strip() or "gemma3:12b"
+LOCAL_URL = (os.environ.get("SB01_LOCAL_URL", "").strip() or "http://127.0.0.1:11434").rstrip("/")
+LOCAL_CONTEXT_TOKENS = 16384     # room for the instructions and course notes (about 9,000 tokens); Ollama's own default would cut them off
+LOCAL_SECONDS = 60.0             # longest wait for one reply
+LOCAL_FIRST_SECONDS = 300.0      # the first request loads the model and reads the notes
+LOCAL_KEEP_LOADED = -1           # the model stays loaded until Ollama stops: after a quiet spell, reloading it would outlast LOCAL_SECONDS
+# A small model needs its limits said plainly, last, or it runs on.
+LOCAL_PROMPT = (
+    "\n\nAnswer in at most three short sentences, in plain spoken words, and then stop. "
+    "State only facts that are in the reference information or that you are sure of. "
+    "Everything you write is spoken aloud, so write only the reply itself, in the one language asked for: "
+    "no label naming the language, no translation, no pronunciation in Latin letters, no notes in brackets."
+)
+# What a small model may still put in front of a reply: "[Spanish]", "(In Italian)".
+_LANGUAGE_LABEL = re.compile(r"^\s*[\[(][^\])\n]{0,40}[\])]\s*")
+# ... and after it: a translation, a pronunciation or a source note, in brackets.
+_TRAILING_NOTE = re.compile(r"\s*[\[(（][^\[\]()（）]{15,}[\])）]\s*$")
 _POINT_CUE = "point_right" if os.environ.get("SB01_BOARD_SIDE", "left").strip().lower() == "right" else "point"
 CUE_PROMPT = (
     "\n\nYou can make a teaching gesture with your arms by putting a mark just before the word it "
@@ -351,6 +375,46 @@ def load_class_material(folder: str | None = None) -> list:
     return [f"=== {CLASS_NOTE} ==="] + parts if parts else []
 
 
+# ── local model ───────────────────────────────────────────────────────────────
+
+def ask_local(system: str, messages: list, max_tokens: int, timeout: float = LOCAL_SECONDS) -> str:
+    """The reply of the model on this computer (Ollama) to these messages.
+    Raises if Ollama cannot be reached, the model is not there or nothing comes back."""
+    body = json.dumps({
+        "model": LOCAL_MODEL, "stream": False, "think": False, "keep_alive": LOCAL_KEEP_LOADED,
+        "messages": [{"role": "system", "content": system}] + list(messages),
+        "options": {"num_ctx": LOCAL_CONTEXT_TOKENS, "num_predict": max_tokens},
+    }).encode()
+    req = urllib.request.Request(LOCAL_URL + "/api/chat", data=body, headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            answer = json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="ignore")[:200]
+        raise RuntimeError(f"Ollama answered {exc.code}: {detail}") from None
+    text = re.sub(r"<think>.*?</think>", "", (answer.get("message") or {}).get("content", ""), flags=re.DOTALL)
+    text = re.sub(r"[*#`]", "", text).strip()          # small models slip into markdown; it would be read aloud
+    label = _LANGUAGE_LABEL.match(text)
+    if label and not gesture_cues.split(label.group(0))[1]:      # a teaching-gesture mark is not a label
+        text = text[label.end():]
+    text = _TRAILING_NOTE.sub("", text).strip() or text
+    if not text:
+        raise RuntimeError("the local model returned nothing")
+    return text
+
+
+def release_local():
+    """Unload the local model when the program ends. It is kept loaded while the
+    program runs; left loaded afterwards, it would hold graphics memory that the
+    voice needs on the next start. Best effort: Ollama may already be gone."""
+    body = json.dumps({"model": LOCAL_MODEL, "keep_alive": 0}).encode()
+    req = urllib.request.Request(LOCAL_URL + "/api/generate", data=body, headers={"Content-Type": "application/json"})
+    try:
+        urllib.request.urlopen(req, timeout=10).close()
+    except Exception:
+        pass
+
+
 # ── name ──────────────────────────────────────────────────────────────────────
 
 def heard_own_name(text: str) -> bool:
@@ -439,7 +503,9 @@ class SB01ConversationLoop:
         self.speaking    = threading.Event()
         self.tts_done    = threading.Event()
         self.history: list[dict] = []
-        self.claude      = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+        if LLM not in ("claude", "local"):
+            raise SystemExit(f"SB01_LLM is {LLM!r}; use claude or local")
+        self.claude      = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"]) if LLM == "claude" else None
         self._pending_text    = ""
         self._pending_emotion = ""
         self._asr_timer: threading.Timer | None = None
@@ -477,7 +543,32 @@ class SB01ConversationLoop:
             prompt += f"\n\nReference information:\n{self.web_context}"
         if GESTURE_CUES and self.gestures:
             prompt += CUE_PROMPT
+        if LLM == "local":
+            prompt += LOCAL_PROMPT
         return prompt
+
+    def _warm_local_model(self):
+        """Have the local model loaded, with the instructions and course notes
+        already read, before anyone asks a question: otherwise the first reply
+        waits for all of that. Stops the program, saying what to do, if the
+        model cannot be reached."""
+        print(f"[llm] local model {LOCAL_MODEL} (Ollama at {LOCAL_URL}): loading it and reading the "
+              f"course notes, which can take a minute...")
+        started = time.time()
+        try:
+            ask_local(self._build_system_prompt(), [{"role": "user", "content": "[Reply in English.] Hi"}], 8,
+                      timeout=LOCAL_FIRST_SECONDS)
+        except Exception as exc:
+            reason = getattr(exc, "reason", exc)
+            if isinstance(reason, TimeoutError) or "timed out" in str(reason):
+                hint = (f"it took over {LOCAL_FIRST_SECONDS:.0f} s to load: the computer is probably short of memory "
+                        f"beside the voice and gesture server. Close other programs, or use a smaller model "
+                        f"(SB01_LOCAL_MODEL=gemma3:4b)")
+            else:
+                hint = (f"is Ollama running (ollama serve), and has the model been fetched (ollama pull {LOCAL_MODEL})? "
+                        f"Or run with Claude: SB01_LLM=claude")
+            raise SystemExit(f"[llm] the local model is NOT available: {reason}\n[llm] -> {hint}") from None
+        print(f"[llm] local model ready in {time.time() - started:.0f} s; replies need no internet and no API key")
 
     def _load_voice(self):
         """Load Chatterbox if it was asked for. If it cannot load, say why and
@@ -558,6 +649,8 @@ class SB01ConversationLoop:
         if GESTURE_URL:
             self.gestures = GestureClient(GESTURE_URL)
             print(f"[{ROBOT_NAME}] arm gestures enabled via {GESTURE_URL}")
+        if LLM == "local":
+            self._warm_local_model()     # after the gestures: they decide what the instructions say
 
     def _start_stt(self):
         """Whisper on the PC if the config (or SB01_STT) asks for it. If it cannot
@@ -940,13 +1033,17 @@ class SB01ConversationLoop:
         if len(self.history) > MAX_HISTORY_TURNS * 2:
             self.history = self.history[-(MAX_HISTORY_TURNS * 2):]
 
-        response = self.claude.messages.create(
-            model="claude-opus-4-8",
-            max_tokens=256,
-            system=self._build_system_prompt(),
-            messages=self.history,
-        )
-        reply = say_own_name(response.content[0].text)   # it only ever calls itself ROBOT_NAME
+        if LLM == "local":
+            text = ask_local(self._build_system_prompt(), self.history, 256)
+        else:
+            response = self.claude.messages.create(
+                model="claude-opus-4-8",
+                max_tokens=256,
+                system=self._build_system_prompt(),
+                messages=self.history,
+            )
+            text = response.content[0].text
+        reply = say_own_name(text)   # it only ever calls itself ROBOT_NAME
         self.history.append({"role": "assistant", "content": reply})
         return reply, emotion_led
 
@@ -962,12 +1059,15 @@ class SB01ConversationLoop:
                 "Then on a new line starting with exactly 'FACTS:', list any new facts you learned "
                 "about the user as a comma-separated list. If none, write 'FACTS: none'."
             )
-            resp = self.claude.messages.create(
-                model="claude-opus-4-8",
-                max_tokens=300,
-                messages=self.history + [{"role": "user", "content": summary_request}],
-            )
-            raw = resp.content[0].text
+            if LLM == "local":
+                raw = ask_local(BASE_SYSTEM_PROMPT, self.history + [{"role": "user", "content": summary_request}], 300)
+            else:
+                resp = self.claude.messages.create(
+                    model="claude-opus-4-8",
+                    max_tokens=300,
+                    messages=self.history + [{"role": "user", "content": summary_request}],
+                )
+                raw = resp.content[0].text
 
             if "FACTS:" in raw:
                 summary, facts_line = raw.split("FACTS:", 1)
@@ -1035,7 +1135,7 @@ class SB01ConversationLoop:
                     reply, emotion_led = self._ask_claude(user_text, emotion, whisper)
                     reply_language = self.language
                 except Exception as exc:
-                    print(f"[error]  Claude API: {exc}")
+                    print(f"[error]  {'local model' if LLM == 'local' else 'Claude API'}: {exc}")
                     reply = "Sorry, I had trouble with that. Could you say it again?"
                     emotion_led = (0, 0, 0)
                     reply_language = None     # the fixed apology is English
@@ -1075,6 +1175,8 @@ def main():
     finally:
         if bot.gestures:
             bot.gestures.close()   # arms are released however the script ends
+        if LLM == "local":
+            release_local()
 
 
 if __name__ == "__main__":
