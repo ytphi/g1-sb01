@@ -124,6 +124,24 @@ class RobotIsCalledYotie(unittest.TestCase):
                      "youtube is fun", "my friend Jodie", "what is your name", "yo, what's up"):
             self.assertFalse(script.heard_own_name(said), said)
 
+    # ── the professor's name ─────────────────────────────────────────────────
+
+    def test_professor_name_variants_are_flagged(self):
+        for said in ("Who is Newton?", "Tell me about Professor Yutah", "is yu tong here",
+                     "You Tang teaches this class", "what does utong teach", "Yoo-Tong", "Utah"):
+            with self.subTest(said=said):
+                self.assertTrue(script.heard_professor(said), said)
+                sent, _ = _converse(base._new_loop(), said, "ok")
+                self.assertIn("Professor Yutong Liu", sent)
+                self.assertIn(said, sent)                                   # not rewritten
+
+    def test_professor_name_needs_no_flag_when_heard_right(self):
+        for said in ("Who is Yutong?", "you tongue twister", "can you tan", "youtube", "what is a ton"):
+            with self.subTest(said=said):
+                self.assertFalse(script.heard_professor(said), said)
+                sent, _ = _converse(base._new_loop(), said, "ok")
+                self.assertNotIn("Professor Yutong Liu", sent)
+
     def test_replies_are_spoken_with_the_right_name_in_every_language(self):
         self.assertEqual(script.say_own_name("Soy Yodie, mucho gusto."), "Soy Yotie, mucho gusto.")
         self.assertEqual(script.say_own_name("我是Yoti。"), "我是Yotie。")

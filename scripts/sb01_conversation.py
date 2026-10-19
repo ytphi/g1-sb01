@@ -222,6 +222,15 @@ NAME_SPOKEN_WRONG = re.compile(
     _NAME_START + "(?:yo+d(?:ee|ie|ey|i|y)|yo+tt?(?:ie|ee|ey|i|y)|yo-?tee|you-?tee|sb[- ]?01)" + _NAME_END,
     re.IGNORECASE)
 
+# Professor Yutong Liu's name. Speech recognition hears "Yutong" as "Yu Tong",
+# "You Tang", "Yutah", "Newton", "Utah" ... PROFESSOR_HEARD finds those, so the
+# model can be told the person may mean her. "Newton" and "Utah" are real words,
+# so the model is only told it MAY be the name and decides from the question.
+PROFESSOR_NAME = "Yutong"
+PROFESSOR_HEARD = re.compile(
+    _NAME_START + "(?:(?:yu|you|yoo|u)[- ]?t[aou]ng|yu[- ]?t(?:ah|an|on|un)|newton|utah)" + _NAME_END,
+    re.IGNORECASE)
+
 # Reply language. The robot answers in the language it is spoken to in: any of
 # Chatterbox Multilingual's 23 languages (teleop/languages.py). A short or
 # unclear phrase never switches it, so a misheard word is answered in the
@@ -420,6 +429,12 @@ def release_local():
 def heard_own_name(text: str) -> bool:
     """Did the person use a likely mis-transcription of the robot's name?"""
     return any(m.group(0).lower() != ROBOT_NAME.lower() for m in NAME_HEARD.finditer(text))
+
+
+def heard_professor(text: str) -> list[str]:
+    """Words that may be a mis-transcription of the professor's name."""
+    return [m.group(0) for m in PROFESSOR_HEARD.finditer(text)
+            if m.group(0).lower() != PROFESSOR_NAME.lower()]
 
 
 def say_own_name(text: str) -> str:
@@ -1014,6 +1029,14 @@ class SB01ConversationLoop:
         if heard_own_name(user_text):
             context_parts.append(f"[The name in this message is how your name, {ROBOT_NAME}, was "
                                  f"transcribed; the person is talking to you.]")
+
+        # the professor's name as speech recognition tends to write it
+        misheard = heard_professor(user_text)
+        if misheard:
+            words = ", ".join(f"'{w}'" for w in misheard)
+            context_parts.append(f"[{words} in this message may be how speech recognition heard "
+                                 f"{PROFESSOR_NAME}, as in Professor {PROFESSOR_NAME} Liu. If the "
+                                 f"question makes more sense that way, they mean {PROFESSOR_NAME}.]")
 
         # weather injection
         if set(user_text.lower().split()) & WEATHER_KEYWORDS:

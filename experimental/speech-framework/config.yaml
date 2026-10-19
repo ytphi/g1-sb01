@@ -19,6 +19,7 @@ stt:
     compute_type: default     # default | float16 | int8_float16 | int8
     language: null            # null = auto-detect; or en / zh / ja / es to force one
     beam_size: 1
+    hotwords: Yutong, Professor Yutong Liu   # names Whisper should expect (it heard "Newton", "Yutah")
   vad:                        # Silero VAD end-of-turn detection (g1-mic / pc-mic)
     threshold: 0.5
     min_silence_ms: 1000      # silence that ends a turn (onboard ASR: ~1-2 s, fixed); 500 cut people off mid-sentence
