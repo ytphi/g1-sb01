@@ -141,6 +141,22 @@ class InTheConversation(unittest.TestCase):
         self.assertEqual(self.loop.gestures.starts,
                          [{"cues": [{"name": "yes", "time": 1.2}, {"name": "point", "time": 3.1}]}])
 
+    def test_when_on_only_the_first_two_marks_and_one_ask_are_gestured(self):
+        # Like what gemma3:12b wrote for "Can you gesture big?": too many marks, [ask] last.
+        reply = ("[big] Great answer. [yes] Yes, that is [small] right. "
+                 "Look at the [point] diagram on the [ask] board. [ask]")
+        with mock.patch.object(script, "GESTURE_CUES", True), \
+                mock.patch.object(script.edge_tts, "Communicate", _SpeakingWords):
+            self.loop._speak(reply)
+        self.assertEqual(_SpeakingWords.asked[-1][0], SPOKEN)            # no mark is spoken
+        self.assertEqual(self.loop.gestures.starts,
+                         [{"cues": [{"name": "big", "time": 0.1}, {"name": "yes", "time": 1.2},
+                                    {"name": "ask", "time": 3.8}]}])
+
+    def test_ask_does_not_count_toward_the_two(self):
+        marks = [("ask", 0), ("big", 5), ("small", 9)]
+        self.assertEqual(script.limit_cues(marks), marks)
+
     def test_when_on_a_reply_that_is_only_marks_says_nothing_and_moves_nothing(self):
         before = len(base.tts_calls)
         with mock.patch.object(script, "GESTURE_CUES", True):

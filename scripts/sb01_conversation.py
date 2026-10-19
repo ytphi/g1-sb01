@@ -138,6 +138,24 @@ def is_question(text: str) -> bool:
 # reply ("look at the [point] diagram") and the arm gesture arrives on that word.
 # SB01_BOARD_SIDE=left|right says where the board or screen is, for pointing.
 GESTURE_CUES = os.environ.get("SB01_GESTURE_CUES", "").strip() == "1" and bool(GESTURE_URL)
+# The instructions ask for at most two; a local model often writes three or four.
+# Only the first two are gestured, plus one [ask] (which Gemma puts at the end of
+# most replies, and which is kept on purpose); the rest are dropped unspoken.
+CUES_PER_REPLY = 2
+
+
+def limit_cues(marks: list) -> list:
+    """The first CUES_PER_REPLY marks other than [ask], and the first [ask], in order."""
+    kept, others, asked = [], 0, False
+    for name, at in marks:
+        if name == "ask" and not asked:
+            asked = True
+        elif name != "ask" and others < CUES_PER_REPLY:
+            others += 1
+        else:
+            continue
+        kept.append((name, at))
+    return kept
 # Which voice speaks. SB01_VOICE=chatterbox uses the Chatterbox voice from
 # experimental/speech-framework (its config.yaml chooses engines and voice clips).
 # Unset or "edge" = Microsoft Edge TTS, as before. Edge TTS is also what is used
@@ -935,6 +953,11 @@ class SB01ConversationLoop:
         marks = []
         if GESTURE_CUES:
             text, marks = gesture_cues.split(text)   # the marks are never spoken
+            kept = limit_cues(marks)
+            if len(kept) < len(marks):
+                print(f"[gesture] {len(marks)} teaching gestures in this reply: only the first "
+                      f"{CUES_PER_REPLY} (and one 'ask') are made")
+                marks = kept
             if not text:
                 self._audio_ready()
                 return                               # a reply that was only marks: nothing to say

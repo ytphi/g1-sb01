@@ -8,9 +8,11 @@
 #
 # The settings below: replies from the local model (Ollama: no internet, no API
 # key), Chatterbox voice with English on the graphics card, arm gestures on,
-# teaching gestures off. SB01_LLM=claude puts the replies back on Claude.
+# teaching gestures on (big, small, point, yes, ask; at most two per reply plus one ask),
+# pointing to the robot's left. SB01_LLM=claude puts the replies back on Claude.
 # Any of them can be set for one run in front of the command, for example
-#       SB01_GESTURE_CUES=1 SB01_BOARD_SIDE=right bash scripts/convention.sh
+#       SB01_GESTURE_CUES=0 bash scripts/convention.sh          (teaching gestures off)
+#       SB01_BOARD_SIDE=right bash scripts/convention.sh        (board on the robot's right)
 # (a setting in the `env` file still wins over both).
 #
 #   bash scripts/convention.sh check     only the checks; Yotie is not started
@@ -23,6 +25,8 @@ export SB01_VOICE="${SB01_VOICE:-chatterbox}"
 export SB01_CHATTERBOX_DEVICE="${SB01_CHATTERBOX_DEVICE:-cuda}"
 export SB01_CHATTERBOX_GPU_ENGINES="${SB01_CHATTERBOX_GPU_ENGINES:-nano}"
 export SB01_GESTURE_URL="${SB01_GESTURE_URL:-http://127.0.0.1:8765}"
+export SB01_GESTURE_CUES="${SB01_GESTURE_CUES:-1}"
+export SB01_BOARD_SIDE="${SB01_BOARD_SIDE:-left}"
 
 if python3 scripts/preflight.py "$INTERFACE"; then
     [ "${1:-}" = check ] && exit 0

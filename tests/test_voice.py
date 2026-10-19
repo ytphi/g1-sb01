@@ -1183,7 +1183,8 @@ class JoinedSentences(unittest.TestCase):
         loop, robot = _loop()
         reply = ("That is a very good answer today. Now look at the [point] diagram on the board. "
                  "The gap is very [small] small, but the effect is [big] huge. [ask] Does anyone have a question?")
-        with mock.patch.object(script, "GESTURE_CUES", True):
+        with mock.patch.object(script, "GESTURE_CUES", True), \
+                mock.patch.object(script, "CUES_PER_REPLY", 4):    # timing of all four, not the limit
             _speak(loop, reply, "en")
         spoken, _ = script.gesture_cues.split(reply)
         runs = self._loud_runs(b"".join(robot.played))
