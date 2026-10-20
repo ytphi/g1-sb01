@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# GMR clone (large, install separately via setup.sh)
+GMR/
+
+# Output data
+output/
+*.pkl
+*.mp4
+
+# Editor
+.vscode/
+.idea/
+
+# Teleop recordings
+episodes/

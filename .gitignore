@@ -36,8 +36,8 @@ teleop/retarget.py
 teleop/robot_control.py
 teleop/live_viewer.py
 
-# Recorded episodes
-record/
+# Recorded episodes (top level only: mocap/record/ is code, the episode recorder)
+/record/
 
 # Editor / OS
 .DS_Store
