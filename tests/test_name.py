@@ -135,6 +135,13 @@ class RobotIsCalledYotie(unittest.TestCase):
                 self.assertIn("Professor Yutong Liu", sent)
                 self.assertIn(said, sent)                                   # not rewritten
 
+    def test_the_model_is_told_the_professors_pronouns(self):
+        self.assertIn("refer to her as she and her, never he or him", script.BASE_SYSTEM_PROMPT)
+
+    def test_her_course_is_answered_in_detail(self):
+        self.assertIn("what Professor Yutong teaches", script.BASE_SYSTEM_PROMPT)
+        self.assertIn("up to six about Professor Yutong's course", script.LOCAL_PROMPT)
+
     def test_professor_name_needs_no_flag_when_heard_right(self):
         for said in ("Who is Yutong?", "you tongue twister", "can you tan", "youtube", "what is a ton"):
             with self.subTest(said=said):
