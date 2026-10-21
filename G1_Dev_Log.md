@@ -11,6 +11,15 @@
 
 ## Session Log
 
+### 2026-10-20 — sb01 voice: edge-tts fixed, Kokoro added as offline backup
+
+- **edge-tts 403:** Microsoft rejected edge-tts 7.2.8 (`WSServerHandshakeError: 403`). Upgraded to 7.3.1 in env310 and it works again. If it 403s again, try `pip install -U edge-tts` first.
+- **Fallback chain** (`_synthesize_or_none`): edge-tts → **Kokoro-82M** on the laptop CPU (`sb01/kokoro_tts.py`, kokoro-onnx 0.6.1) → the G1's built-in `TtsMaker`. After an edge-tts failure it skips edge for 5 min.
+- **Kokoro:** female voices af_heart (en), ef_dora (es), zf_xiaoxiao (zh). Model files are in `~/.cache/kokoro-onnx` (~350 MB). 0.3–1.0 s per sentence on CPU (about 5× real time); the next sentence is synthesized while the current one plays. Chinese needs `misaki[zh]` G2P, because espeak `cmn` was unintelligible (a Whisper round-trip heard gibberish). EN/ES/ZH round-trips through Whisper came back correct.
+- `--tts kokoro` uses Kokoro only (offline, or to try the voice). Default `--tts edge`.
+- Installed into env310: `kokoro-onnx`, `misaki[zh]`, plus `onnx-asr` with Parakeet TDT 0.6B v2/v3 (HF cache). Parakeet isn't wired in: no Chinese, no vocabulary prompt, and 1.3 s on CPU vs Whisper's 0.3 s on GPU. Whisper stays.
+- **Not yet tested on the robot** (PlayStream of Kokoro PCM).
+
 ### 2026-10-10 — Repo split: G1 projects under `unitree/g1/`, teleop moved out
 
 - Local layout: `unitree/g1/{g1-sb01, g1-qtm-teleop, g1-kendama, g1-text-to-motion}`. This repo was `unitree/g1`; shared deps (env, env310, TEXEDO, unitree_sdk2) stay in `unitree/`.

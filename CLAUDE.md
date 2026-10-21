@@ -27,7 +27,7 @@
 | `scripts/g1_rviz_bridge.py` / `run_g1_rviz.sh` | RViz bridge |
 | `scripts/check_robot.py` | Connection and status check |
 
-Conversation modules live in `sb01/` (face_id, memory_manager, knowledge_base, talk_gestures, whisper_asr).
+Conversation modules live in `sb01/` (face_id, memory_manager, knowledge_base, talk_gestures, whisper_asr, kokoro_tts).
 MoCap teleop moved to its own repo, `../g1-qtm-teleop` (installed editable in env310/texedo310);
 `sb01/talk_gestures.py` imports its `teleop.safety.SafetyFilter` and joint limits from there.
 

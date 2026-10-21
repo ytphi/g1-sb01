@@ -8,7 +8,8 @@ Features:
   - Speech recognition: Whisper on the laptop GPU from the robot's mic (default), or the
     G1's built-in ASR (--asr robot)
   - Emotion-aware (built-in ASR only): LED reacts to detected voice emotion; Claude gets a hint
-  - Edge TTS with automatic language detection (EN / ZH / ES)
+  - Edge TTS with automatic language detection (EN / ZH / ES); if edge-tts is unreachable,
+    Kokoro on this laptop (offline), then the G1's built-in voice
   - Optional arm gestures while talking (G1 built-in arm actions, picked by Claude)
   - --demo mode: visitor-facing persona instead of the classroom assistant
 
@@ -18,7 +19,7 @@ Network layout:
 
 Usage:
   python3 scripts/sb01_conversation.py [network_interface] [--demo] [--gestures | --no-gestures]
-                                       [--asr whisper|robot]
+                                       [--asr whisper|robot] [--tts edge|kokoro]
 """
 
 import sys
@@ -63,14 +64,21 @@ from sb01.memory_manager import MemoryManager
 from sb01.knowledge_base import KnowledgeBase, _preprocess
 from sb01.talk_gestures import TalkGestures
 from sb01.whisper_asr import WhisperASR
+from sb01.kokoro_tts import KokoroTTS
 
 # ── config ───────────────────────────────────────────────────────────────────
 NETWORK_INTERFACE = "eno0"
 ROBOT_NAME        = "Yotie"
 ASR_TOPIC         = "rt/audio_msg"
-VOICE_EN = "en-US-JennyNeural"
-VOICE_ZH = "zh-CN-XiaoxiaoNeural"
-VOICE_ES = "es-MX-DaliaNeural"
+EDGE_VOICE = {
+    "en": "en-US-JennyNeural",
+    "zh": "zh-CN-XiaoxiaoNeural",
+    "es": "es-MX-DaliaNeural",
+}
+# Fallbacks when edge-tts is unreachable (e.g. Microsoft returning 403): Kokoro on this laptop
+# (sb01/kokoro_tts.py), and if that fails too, the G1's own TTS.
+ROBOT_TTS_SPEAKER   = 0      # speaker_id for AudioClient.TtsMaker
+EDGE_TTS_RETRY_SECS = 300    # after an edge-tts failure, use the fallback this long before retrying
 
 PCM_SAMPLE_RATE   = 16000
 PCM_CHUNK_BYTES   = 96000
@@ -431,10 +439,13 @@ class GestureController:
 
 class SB01ConversationLoop:
     def __init__(self, interface: str, web_context: str, demo: bool = False, gestures: bool = False,
-                 talk_gestures: bool = False, asr: str = "whisper", asr_lang: str | None = None):
+                 talk_gestures: bool = False, asr: str = "whisper", asr_lang: str | None = None,
+                 tts: str = "edge"):
         self.interface   = interface
         self.asr_mode    = asr
         self.asr_lang    = asr_lang
+        self.tts_mode    = tts
+        self.kokoro: KokoroTTS | None = None
         self.web_context = web_context
         self.demo        = demo
         self.audio       = AudioClient()
@@ -443,6 +454,7 @@ class SB01ConversationLoop:
         self.asr_queue: queue.Queue[tuple[str, str]] = queue.Queue()
         self.speaking    = threading.Event()
         self.tts_done    = threading.Event()
+        self.edge_tts_down_until = 0.0
         self.history: list[dict] = []
         self.claude      = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
         self._pending_text    = ""
@@ -503,6 +515,12 @@ class SB01ConversationLoop:
             except Exception as exc:
                 print(f"[{ROBOT_NAME}] whisper failed to start ({exc}); using the robot's built-in ASR")
                 self.asr_mode = "robot"
+        try:
+            self.kokoro = KokoroTTS()
+            print(f"[{ROBOT_NAME}] Kokoro TTS loaded (offline backup voice)")
+        except Exception as exc:
+            print(f"[{ROBOT_NAME}] Kokoro TTS unavailable ({exc}); backup voice is the robot's own")
+            self.tts_mode = "edge"
 
         if self.person_name and not self._memory_excluded():
             self.memory_consent = self.memory.get_consent(self.person_name)
@@ -581,15 +599,15 @@ class SB01ConversationLoop:
     # ── TTS ──────────────────────────────────────────────────────────────────
 
     @staticmethod
-    def _pick_voice(text: str) -> str:
+    def _pick_lang(text: str) -> str:
         if any('一' <= c <= '鿿' for c in text):
-            return VOICE_ZH
+            return "zh"
         if any(c in {'á','é','í','ó','ú','ñ','¿','¡','ü'} for c in text.lower()):
-            return VOICE_ES
-        return VOICE_EN
+            return "es"
+        return "en"
 
-    async def _text_to_pcm(self, text: str) -> bytes:
-        communicate = edge_tts.Communicate(text, self._pick_voice(text))
+    async def _text_to_pcm(self, text: str, lang: str) -> bytes:
+        communicate = edge_tts.Communicate(text, EDGE_VOICE[lang])
         mp3_chunks = []
         async for chunk in communicate.stream():
             if chunk["type"] == "audio":
@@ -615,7 +633,7 @@ class SB01ConversationLoop:
                     for written, spoken in TTS_RESPELL.items():
                         text = text.replace(written, spoken)
                     if text.strip():
-                        pcm_queue.put((text, asyncio.run(self._text_to_pcm(text))))
+                        pcm_queue.put((text, self._synthesize_or_none(text)))
             except Exception as exc:
                 print(f"[{ROBOT_NAME}] TTS failed ({exc}); skipping speech")
             finally:
@@ -632,13 +650,45 @@ class SB01ConversationLoop:
                     first = False
                 self.talk.sentence(text, cue)  # movement matched to the sentence's words
                 cue = None                     # a cue (e.g. fist bump) applies to the first sentence only
-                self._play_pcm(pcm)
+                if pcm is None:
+                    self._play_robot_tts(text)
+                else:
+                    self._play_pcm(pcm)
         except Exception as exc:
             print(f"[{ROBOT_NAME}] playback failed ({exc})")
         finally:
             self.talk.end()                    # arms ease back to rest
             self.audio.LedControl(0, 0, 0)
             self.speaking.clear()
+
+    def _synthesize_or_none(self, text: str) -> bytes | None:
+        """PCM for one sentence from edge-tts, else Kokoro, else None to have the robot's own
+        TTS speak it."""
+        lang = self._pick_lang(text)
+        if self.tts_mode == "edge" and time.time() >= self.edge_tts_down_until:
+            try:
+                return asyncio.run(self._text_to_pcm(text, lang))
+            except Exception as exc:
+                backup = "Kokoro" if self.kokoro else "the robot voice"
+                print(f"[{ROBOT_NAME}] edge-tts failed ({exc}); using {backup} "
+                      f"for the next {EDGE_TTS_RETRY_SECS // 60} min")
+                self.edge_tts_down_until = time.time() + EDGE_TTS_RETRY_SECS
+        if self.kokoro:
+            try:
+                return self.kokoro.synthesize(text, lang, PCM_SAMPLE_RATE)
+            except Exception as exc:
+                print(f"[{ROBOT_NAME}] Kokoro failed ({exc}); using the robot voice for this sentence")
+        return None
+
+    def _play_robot_tts(self, text: str):
+        """Speak one sentence with the G1's built-in TTS and wait until it finishes playing."""
+        self.tts_done.clear()
+        code = self.audio.TtsMaker(text, ROBOT_TTS_SPEAKER)
+        if code != 0:
+            print(f"[{ROBOT_NAME}] robot TtsMaker error, return code: {code}")
+            return
+        self.tts_done.wait(timeout=len(text) / 10 + 3.0)   # ~10 chars/s speech, plus margin
+        time.sleep(0.4)
 
     def _play_pcm(self, pcm: bytes):
         """Stream one clip to the robot speaker and wait until it finishes playing."""
@@ -917,11 +967,14 @@ def main():
     parser.add_argument("--asr-lang", choices=("auto", "en"), default="auto",
                         help="Whisper language: auto-detect English/Chinese/Spanish (default), or English only "
                              "(try this if accented English comes out as Chinese)")
+    parser.add_argument("--tts", choices=("edge", "kokoro"), default="edge",
+                        help="voice: edge-tts online (default; falls back to Kokoro, then the robot's "
+                             "built-in voice), or Kokoro offline on this laptop")
     args = parser.parse_args()
     interface = args.interface
     gestures = args.demo if args.gestures is None else args.gestures
     print(f"[{ROBOT_NAME}] using network interface: {interface}"
-          f"  (demo={args.demo}, gestures={gestures}, talk_gestures={args.talk_gestures}, asr={args.asr})")
+          f"  (demo={args.demo}, gestures={gestures}, talk_gestures={args.talk_gestures}, asr={args.asr}, tts={args.tts})")
 
     print(f"[{ROBOT_NAME}] loading web context...")
     web_context = load_context()
@@ -931,7 +984,8 @@ def main():
 
     bot = SB01ConversationLoop(interface, web_context, demo=args.demo, gestures=gestures,
                                talk_gestures=args.talk_gestures, asr=args.asr,
-                               asr_lang=None if args.asr_lang == "auto" else args.asr_lang)
+                               asr_lang=None if args.asr_lang == "auto" else args.asr_lang,
+                               tts=args.tts)
     bot.setup()
     bot.run()
 
