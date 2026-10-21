@@ -8,6 +8,8 @@ Her README.md in this folder is unchanged and is the setup guide.
 
 Changes from her version:
 - `config/teleop.yaml`: `robot.network_interface` is `enp2s0`, the lab computer's port to the G1 (hers was `eno0`).
+- `config/teleop_laptop.yaml` (added): `teleop.yaml` at 50 updates a second instead of 100, for recording on
+  laptops, which can't keep 100 (takes would play back too fast). See the note at its top.
 
 Run everything from inside this folder (`cd mocap`): her scripts use paths relative to it.
 `bash setup.sh` clones GMR into `mocap/GMR/`, which git ignores; the lab computer runs it once itself.

@@ -1,0 +1,37 @@
+# Hey! Quick note if you're using this branch:
+#
+# This is the same as teleop.yaml (Prof. Liu's settings) except for ONE number:
+# control_freq is 50 here instead of 100.
+#
+# Why: the recorder assumes the program keeps that pace exactly, and it doesn't save
+# the real time of each frame. Laptops often can't keep up at 100 updates a second, so
+# your takes would play back faster than you performed them (we measured ~7% too fast
+# on a laptop). At 50 a second laptops keep up fine (~3%, not noticeable), and 50 is
+# still plenty smooth for gestures. It's also the rate her FBX conversion uses.
+#
+# Use this one on laptops:   --config config/teleop_laptop.yaml
+# The lab computer is faster and uses the original:   --config config/teleop.yaml
+#
+# Everything else (QTM address, skeleton name, safety limits) is copied from teleop.yaml.
+# If you change those there, change them here too.
+
+robot:
+  ip: "192.168.123.1"       # G1 default; change if different
+  network_interface: "enp2s0" # lab computer's port to the G1 (192.168.123.222); upstream had eno0 (her laptop). Check with `ip -br addr`
+  control_freq: 50          # Hz; 50 on the laptop so the loop keeps time (teleop.yaml: 100)
+  dof: 29                   # confirmed 29-DOF G1 U2
+
+qtm:
+  ip: "192.168.0.1"         # QTM PC camera-network NIC; laptop eno0 has 192.168.0.250 (wired)
+  port: 22223               # qtm_rt needs 22223; 22222 on QTM 2024.2 is legacy protocol 1.0 only (hangs)
+  skeleton_name: "Actor1"   # name assigned in QTM skeleton setup
+
+recording:
+  save_dir: "./episodes"
+  obs_image: false          # true records cv2 device 0 = this LAPTOP's webcam, not the G1 head camera
+  image_size: [640, 480]
+
+safety:
+  max_joint_vel: 1.0        # rad/s per joint (rate limit on every command); lower = gentler
+  qtm_timeout: 0.2          # s; older mocap data → hold pose
+  limit_margin: 0.05        # rad inside URDF joint limits
