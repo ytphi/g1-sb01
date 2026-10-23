@@ -136,7 +136,11 @@ class RobotIsCalledYotie(unittest.TestCase):
                 self.assertIn(said, sent)                                   # not rewritten
 
     def test_the_model_is_told_the_professors_pronouns(self):
-        self.assertIn("refer to her as she and her, never he or him", script.BASE_SYSTEM_PROMPT)
+        self.assertIn("whenever you mention her, use she and her", script.BASE_SYSTEM_PROMPT)
+        self.assertNotIn("a woman", script.BASE_SYSTEM_PROMPT)     # it was repeated aloud as a fact
+
+    def test_she_is_only_brought_up_when_asked(self):
+        self.assertIn("Only talk about her or her course when the person asks", script.BASE_SYSTEM_PROMPT)
 
     def test_her_course_is_answered_in_detail(self):
         self.assertIn("what Professor Yutong teaches", script.BASE_SYSTEM_PROMPT)
