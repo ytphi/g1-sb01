@@ -19,7 +19,7 @@ CUE_NAMES = ("yes", "point", "point_right", "one_hand", "other_hand", "small", "
 MAX_CUES = 12
 
 _MARK = re.compile(r"\[(" + "|".join(CUE_NAMES) + r")\]\s*", re.IGNORECASE)
-_ANY_MARK = re.compile(r"\[[a-z_]{2,20}\]\s*", re.IGNORECASE)
+_ANY_MARK = re.compile(r"\[[^\W\d]{2,20}\]\s*")      # any letters, so a translated "[pequeño]" is not read aloud either
 
 
 def split(text: str) -> tuple[str, list[tuple[str, int]]]:

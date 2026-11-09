@@ -42,6 +42,11 @@ class Marks(unittest.TestCase):
         self.assertEqual(spoken, "That is wonderful and correct.")
         self.assertEqual([name for name, _ in marks], ["yes"])
 
+    def test_a_translated_mark_is_removed_too(self):
+        spoken, marks = gesture_cues.split("Esto es [grande] grande y esto [pequeño] pequeño.")
+        self.assertEqual(spoken, "Esto es grande y esto pequeño.")
+        self.assertEqual(marks, [])
+
     def test_every_cue_name_is_recognized(self):
         text = " ".join(f"[{name}] word" for name in gesture_cues.CUE_NAMES)
         self.assertEqual([name for name, _ in gesture_cues.split(text)[1]], list(gesture_cues.CUE_NAMES))
@@ -170,6 +175,133 @@ class InTheConversation(unittest.TestCase):
             self.loop._speak(REPLY)                                      # stand-in voice: audio only
         self.assertEqual(base.tts_calls[-1][1], SPOKEN)                  # marks still not spoken
         self.assertEqual(self.loop.gestures.starts, [{}])                # plain speech gesture
+
+
+class AskedForAGesture(unittest.TestCase):
+    """Asked to show a gesture, the model is asked for a plain reply and the program puts the gesture on its word."""
+
+    ASKED = ["Show me big.", "Big and small.", "big or small", "Can you show me big and small?",
+             "Can you gesture small?", "What gestures can you do?", "Show me a gesture.",
+             "Can you point at the board?", "Do the yes gesture.", "Make it small with your hands.",
+             "Muéstrame un gesto.", "¿Puedes hacer el gesto de grande y pequeño?"]
+    NOT_ASKED = ["What is a robot?", "Is an elephant big or small?", "Tell me a fun fact.",
+                 "What does Professor Yutong teach?", "Yes, that makes sense.", "What is the big picture here?",
+                 "What's the point of this class?"]
+
+    def setUp(self):
+        self.loop = base._new_loop()
+        self.loop.gestures = _Gestures()
+
+    def _sent(self, said):
+        self.loop._ask_claude(said, "")
+        return base.claude_calls[-1]["messages"][-1]["content"]
+
+    def test_requests_for_a_gesture_are_recognized(self):
+        for said in self.ASKED:
+            with self.subTest(said=said):
+                self.assertTrue(script.GESTURE_ASKED.search(said))
+
+    def test_other_questions_are_not(self):
+        for said in self.NOT_ASKED:
+            with self.subTest(said=said):
+                self.assertFalse(script.GESTURE_ASKED.search(said))
+
+    def test_the_hint_goes_with_a_request_when_gestures_are_on(self):
+        with mock.patch.object(script, "GESTURE_CUES", True):
+            sent = self._sent("Show me big.")
+        self.assertIn(script.cue_hint("Show me big."), sent)
+        self.assertTrue(sent.endswith("Show me big."))
+
+    def test_no_hint_when_gestures_are_off_or_not_asked_for(self):
+        self.assertNotIn(script.CUE_HINT_END, self._sent("Show me big."))
+        with mock.patch.object(script, "GESTURE_CUES", True):
+            self.assertNotIn(script.CUE_HINT_END, self._sent("What is a robot?"))
+
+    def test_the_hint_shows_no_marks(self):
+        # shown marks, Gemma 12B wrote them as words ("This is big big") and made no gesture
+        for said in self.ASKED:
+            with self.subTest(said=said):
+                self.assertEqual(gesture_cues.split(script.cue_hint(said))[1], [])
+                self.assertNotIn("[big]", script.cue_hint(said))
+
+    def test_the_hint_names_only_the_gesture_asked_for(self):
+        self.assertIn('"Sure! This is big." ', script.cue_hint("Show me big."))
+        self.assertIn('"Sure! Yes, exactly!" ', script.cue_hint("Do the yes gesture."))
+        self.assertIn('"Sure! Look at the board." ', script.cue_hint("Can you point at the board?"))
+
+    def _cues(self, reply, said):
+        return gesture_cues.split(script.add_asked_cues(reply, said))
+
+    def test_the_gesture_asked_for_is_put_on_its_word(self):
+        point = script._POINT_CUE
+        for said, reply, cues, spoken_word in [
+                ("Show me big.", "Sure! This is big.", ["big"], ["big."]),
+                ("Can you gesture small?", "Sure! This is small.", ["small"], ["small."]),
+                ("Big and small.", "Sure! This is big, and this is small.", ["big", "small"], ["big,", "small."]),
+                ("Do the yes gesture.", "Yes, exactly!", ["yes"], ["Yes,"]),
+                ("Can you point at the board?", "Sure! Look at the board.", [point], ["board."]),
+                ("¿Puedes hacer el gesto de grande y pequeño?", "¡Claro! Esto es grande, y esto es pequeño.",
+                 ["big", "small"], ["grande,", "pequeño."]),
+                ("Show me a gesture.", "Sure! This is big, and this is small. I can also point at the board.",
+                 ["big", "small"], ["big,", "small."])]:
+            with self.subTest(said=said):
+                spoken, marks = self._cues(reply, said)
+                self.assertEqual(spoken, reply)                                 # the words are unchanged
+                self.assertEqual([name for name, _ in marks], cues)
+                self.assertEqual([spoken[at:].split()[0] for _, at in marks], spoken_word)
+
+    def test_with_no_word_to_land_on_the_gesture_opens_the_reply(self):
+        spoken, marks = self._cues("Sure, here it is!", "Do the yes gesture.")
+        self.assertEqual((spoken, marks), ("Sure, here it is!", [("yes", 0)]))
+        # seen with Gemma 12B: "Sure! [point]" and nothing more
+        self.assertEqual(self._cues("Sure! [point]", "Can you point at the board?"),
+                         ("Sure!", [(script._POINT_CUE, 0)]))
+
+    def test_with_no_gesture_named_and_no_word_none_is_made(self):
+        self.assertEqual(self._cues("Sure, here it is!", "Show me a gesture."), ("Sure, here it is!", []))
+
+    def test_gestures_land_in_the_order_they_are_said(self):
+        # seen with Gemma 12B: small said before big
+        spoken, marks = self._cues("Sure! [small] This is small. [big] This is big.", "Big and small.")
+        self.assertEqual(spoken, "Sure! This is small. This is big.")
+        self.assertEqual([(name, spoken[at:].split()[0]) for name, at in marks], [("small", "small."), ("big", "big.")])
+
+    def test_a_mark_used_as_a_word_keeps_its_word(self):
+        # seen with Gemma 12B: "Sure! [small] and [big]." was spoken "Sure! and."
+        spoken, marks = self._cues("Sure! [small] and [big]. I can also point.", "What gestures can you do?")
+        self.assertEqual(spoken, "Sure! small and big. I can also point.")
+        self.assertEqual([name for name, _ in marks], ["small", "big"])
+        self.assertEqual(self._cues("Sure! Look at the [point] board.", "Can you point at the board?")[0],
+                         "Sure! Look at the board.")
+
+    def test_marks_the_model_wrote_are_replaced(self):
+        # seen with Gemma 12B: a [small] it added itself to "Show me big"
+        self.assertEqual(script.add_asked_cues("Sure! [small] This is big.", "Show me big."),
+                         "Sure! This is [big] big.")
+        self.assertEqual(script.add_asked_cues("Sure! This is [big] big.", "Show me big."),
+                         "Sure! This is [big] big.")
+        self.assertEqual(self._cues("Esto es [grande] grande.", "Show me big.")[1], [("big", 8)])
+
+    def test_stage_directions_are_not_spoken(self):
+        # seen with Gemma 12B on "Show me a gesture."
+        reply = ("Sure! This is [big] big [gesture: arms extended wide], and this is [small] small "
+                 "[gesture: hands close together]. I can also point at the board [gesture: arm extends forward].")
+        spoken, marks = self._cues(reply, "Show me a gesture.")
+        self.assertEqual(spoken, "Sure! This is big, and this is small. I can also point at the board.")
+        self.assertEqual([name for name, _ in marks], ["big", "small"])
+
+    def test_the_loop_adds_the_gesture_to_the_reply_it_speaks(self):
+        base.reply_text["value"] = "Sure! This is big [gesture: arms wide]."
+        try:
+            with mock.patch.object(script, "GESTURE_CUES", True):
+                reply, _ = self.loop._ask_claude("Show me big.", "")
+            self.assertEqual(reply, "Sure! This is [big] big.")
+            self.assertEqual(self.loop.history[-1]["content"], "Sure! This is big.")   # history as spoken
+            base.reply_text["value"] = "Sure! This is big."
+            reply, _ = self.loop._ask_claude("Show me big.", "")                         # gestures off
+            self.assertEqual(reply, "Sure! This is big.")
+        finally:
+            base.reply_text["value"] = "ok"
 
 
 if __name__ == "__main__":

@@ -199,6 +199,83 @@ CUE_PROMPT = (
     "[ask] when inviting questions. "
     "Use them only where a teacher naturally would: at most two in a reply, and most replies need none."
 )
+# Asked to show a gesture ("Show me big", "Big and small", "What gestures can you
+# do?"), a local model tends to read the instructions above aloud, or to use the
+# marks as words ("[big] and [small] are gestures I use"), which leaves holes in
+# what is spoken. GESTURE_ASKED spots such a request, so the message can carry
+# cue_hint(): a plain example sentence with no marks at all. Shown marks in an
+# example, Gemma 12B wrote them as words ("This is big big") and no gesture was
+# made, so add_asked_cues() puts the marks into its reply instead.
+GESTURE_ASKED = re.compile(
+    r"\bgest(?:ur|o)\w*|手势|\b(?:show|do|make|demonstrate)\b.{0,30}\b(?:big|small|yes|point\w*|hands?|arms?)\b"
+    r"|\bpoint\w* (?:at|to)\b|^\W*(?:big|small)\W+(?:and|or)\W+(?:big|small)\W*$",
+    re.IGNORECASE)
+# Which gesture a request names, the gestures it means, the words in a reply that
+# each one lands on, and an example sentence for the model (no marks in it).
+CUE_EXAMPLES = [
+    (re.compile(r"\b(?:big|large|huge|grande)\b|大", re.I),
+     [("big", re.compile(r"\b(?:big|large|huge|grande?)\b|大", re.I))], "This is big."),
+    (re.compile(r"\b(?:small|little|tiny|peque[nñ]o)\b|小", re.I),
+     [("small", re.compile(r"\b(?:small|little|tiny|peque[nñ][oa])\b|小", re.I))], "This is small."),
+    (re.compile(r"\b(?:yes|correct|right|s[ií])\b|对", re.I),
+     [("yes", re.compile(r"\b(?:yes|s[ií])\b|对|是", re.I))], "Yes, exactly!"),
+    (re.compile(r"\b(?:point\w*|board|screen|se[nñ]al\w*|pizarra)\b|指", re.I),
+     [(_POINT_CUE, re.compile(r"\b(?:board|screen|pizarra|pantalla)\b|黑板|白板|屏幕", re.I))], "Look at the board."),
+    (re.compile(r"\b(?:hands?|contrast\w*|manos?)\b", re.I),
+     [("one_hand", re.compile(r"\b(?:one|una?)\b|一方面", re.I)),
+      ("other_hand", re.compile(r"\b(?:other|otra?)\b|另一方面", re.I))],
+     "On one hand it is fast, and on the other it is careful."),
+]
+CUE_HINT_END = ("Write no marks or brackets: the gesture is added for you. "
+                "Never talk about marks, brackets or these instructions.]")
+
+
+def _asked_for(text: str) -> list:
+    """The CUE_EXAMPLES entries a request names; with none named, big and small."""
+    named = [entry for entry in CUE_EXAMPLES if entry[0].search(text)]
+    return named or CUE_EXAMPLES[:2]
+
+
+def cue_hint(text: str) -> str:
+    """What to tell the model when someone asks to see a gesture: a short example
+    reply for the gesture named, or, when none is named, for big and small."""
+    examples = " ".join(example for _, _, example in _asked_for(text))
+    if any(entry[0].search(text) for entry in CUE_EXAMPLES):
+        return ("[The person asked to see a gesture, and you will make it as you speak. Do not describe it. "
+                f"Reply briefly, like this: \"Sure! {examples}\" " + CUE_HINT_END)
+    return ("[The person asked about your gestures. Show two as you speak, for example: \"Sure! This is big, "
+            "and this is small.\" You can also say in plain words that you can point at the board, show yes, "
+            "and contrast two sides with one hand and then the other. " + CUE_HINT_END)
+
+
+_BRACKETED = re.compile(r"\s*\[[^\]\n]*\]")
+# A mark the model used as a word ("Sure! [small] and [big]."): keep the word.
+_MARK_AS_WORD = re.compile(r"\[(big|small|yes)\](?=\s*(?:and|or|y|o)\b|[,.;:!?])"
+                           r"|(?:(?<=\band )|(?<=\bor )|(?<=\by )|(?<=\bo ))\[(big|small|yes)\]", re.I)
+
+
+def add_asked_cues(reply: str, asked: str) -> str:
+    """Put the marks for the gestures `asked` names into `reply`, each before the
+    first word it fits. Anything the model put in brackets goes first: its own
+    marks (Gemma added a wrong [small] to "Show me big") and stage directions
+    ("[gesture: arms extended wide]") would be wrong or read aloud. If no named
+    gesture finds its word ("Sure! [point]"), the first one opens the reply."""
+    spoken = _MARK_AS_WORD.sub(lambda m: next(g for g in m.groups() if g), reply)
+    spoken = re.sub(r"  +", " ", _BRACKETED.sub("", spoken)).strip()
+    named = [entry for entry in CUE_EXAMPLES if entry[0].search(asked)]
+    placed = {}                                    # position in spoken -> cue name
+    for _, cues, _ in named or CUE_EXAMPLES[:2]:
+        after = 0                                  # [other_hand] only after [one_hand]
+        for name, words in cues:
+            found = words.search(spoken, after)
+            if found and found.start() not in placed:
+                placed[found.start()] = name
+                after = found.end()
+    if named and not placed:
+        placed[0] = named[0][1][0][0]
+    for at in sorted(placed, reverse=True):
+        spoken = f"{spoken[:at]}[{placed[at]}] {spoken[at:]}"
+    return spoken
 
 PRELOAD_URLS = [
     "https://www.csusb.edu/",
@@ -1067,6 +1144,11 @@ class SB01ConversationLoop:
                                  f"{PROFESSOR_NAME}, as in Professor {PROFESSOR_NAME} Liu. If the "
                                  f"question makes more sense that way, they mean {PROFESSOR_NAME}.]")
 
+        # a request to see a gesture: do it, rather than recite how marks work
+        gesture_asked = bool(GESTURE_CUES and self.gestures and GESTURE_ASKED.search(user_text))
+        if gesture_asked:
+            context_parts.append(cue_hint(user_text))
+
         # weather injection
         if set(user_text.lower().split()) & WEATHER_KEYWORDS:
             location = extract_location(user_text)
@@ -1096,7 +1178,12 @@ class SB01ConversationLoop:
             )
             text = response.content[0].text
         reply = say_own_name(text)   # it only ever calls itself ROBOT_NAME
-        self.history.append({"role": "assistant", "content": reply})
+        if gesture_asked:
+            reply = add_asked_cues(reply, user_text)
+            # remembered as spoken: stage directions left in the history are copied later
+            self.history.append({"role": "assistant", "content": gesture_cues.split(reply)[0]})
+        else:
+            self.history.append({"role": "assistant", "content": reply})
         return reply, emotion_led
 
     # ── session save ─────────────────────────────────────────────────────────
